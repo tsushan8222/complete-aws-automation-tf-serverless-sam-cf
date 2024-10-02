@@ -24,5 +24,5 @@ inputs = {
     policies = local.policies
     managed_policies = []
     sender_email = "developers@example.com"
-    keybase_pgp_key = "devopshle"
+    keybase_pgp_key = "devops"
 }
