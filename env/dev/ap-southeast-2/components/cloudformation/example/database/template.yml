@@ -1,0 +1,111 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: "HLE wordpress website"
+Parameters:
+  Environment:
+    Type: String
+    Description: 'The environment to deploy to'
+    Default: 'dev'
+  DBInstance:
+    Type: String
+    Default: db.t2.small
+  DBSnapshot:
+    Type: String
+    Default: ''
+  DBUser:
+    Default: ''
+    Type: String
+  DBPassword:
+    Type: String
+    Default: ''
+  MultiAZDatabase:
+    Default: 'false'
+    Description: Create a Multi-AZ MySQL Amazon RDS database instance
+    Type: String
+  DBAllocatedStorage:
+    Default: '50'
+    Description: The size of the database (Gb)
+    Type: Number
+  Url:
+    Type: String
+    Default: rds
+  DatabaseVersion:
+    Type: String
+    Default: '5.6.41'
+  StorageType: 
+    Type: String
+    Default: gp2
+
+Resources:
+  DBEC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Open database for access
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '3306'
+        ToPort: '3306'
+        SourceSecurityGroupId: !Ref DBAccess
+      VpcId:
+        Fn::ImportValue: !Sub ${Environment}-Vpc
+
+  DBAccess:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allowed to access the RDS
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '3306'
+        ToPort: '3306'
+      VpcId:
+        Fn::ImportValue: !Sub ${Environment}-Vpc
+  
+  DBGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Database Subnet for RDS instance
+      SubnetIds:
+      - Fn::ImportValue: !Sub ${Environment}-PrivateSubnetA
+      - Fn::ImportValue: !Sub ${Environment}-PrivateSubnetB
+      - Fn::ImportValue: !Sub ${Environment}-PrivateSubnetC
+  DBRdsInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      Engine: MySQL
+      EngineVersion: !Ref DatabaseVersion
+      DBSnapshotIdentifier: !Ref DBSnapshot
+      DBSubnetGroupName: !Ref DBGroup
+      MultiAZ: !Ref MultiAZDatabase
+      MasterUsername: !Ref DBUser
+      MasterUserPassword: !Ref DBPassword
+      DBInstanceClass: !Ref DBInstance
+      AllocatedStorage: !Ref DBAllocatedStorage
+      StorageType: !Ref StorageType
+      VPCSecurityGroups: 
+      - !GetAtt DBEC2SecurityGroup.GroupId
+
+  DbDns:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      Type: CNAME
+      TTL: 300
+      ResourceRecords:
+        - !GetAtt DBRdsInstance.Endpoint.Address
+      HostedZoneId:
+        Fn::ImportValue: !Sub ${Environment}-PrivateHostedZone
+      Name: !Join
+        - .
+        - - !Ref Url
+          - Fn::ImportValue: !Sub ${Environment}-InternalDomain
+
+Outputs:
+  DBPublicSecurityGroup:
+    Description: RDS public hosted zone security group
+    Value: !Ref DBAccess
+    Export:
+      Name: !Sub ${Environment}-RDSAccess
+  DBEndpointAddress:
+    Description: RDS public endpoint address
+    Value: !GetAtt DBRdsInstance.Endpoint.Address
+    Export:
+      Name: !Sub ${Environment}-hle-dbAddress

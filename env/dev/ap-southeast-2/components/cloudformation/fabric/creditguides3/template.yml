@@ -1,0 +1,64 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: S3 buckets used for deployment and logs
+Parameters:
+  Environment:
+    Type: String
+    Description: "The environment to deploy to"
+    Default: "dev"
+Resources:
+  CreditGuideBucket:
+    Type: "AWS::S3::Bucket"
+    Properties:
+      BucketName: !Sub '${Environment}-hle-creditguide'
+  CreditGuideBucketPolicy:
+    Type: "AWS::S3::BucketPolicy"
+    Properties:
+      Bucket: !Ref CreditGuideBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Id: "PutObjBucketPolicy"
+        Statement:
+        - Sid: "DenyUnEncryptedObjectUploads"
+          Effect: "Deny"
+          Principal: "*"
+          Action: "s3:PutObject"
+          Resource: !Join ["", [!GetAtt CreditGuideBucket.Arn, "/*"]]
+          Condition:
+            StringNotEquals:
+              s3:x-amz-server-side-encryption: "aws:kms"
+  CreditGuideBucketKmsKey:
+    Type: "AWS::KMS::Key"
+    Properties:
+      Description: KMS key used to encrypt creditguide bucket
+      KeyPolicy:
+        Version: "2012-10-17"
+        Id: "AdminKeyPolicy"
+        Statement:
+        - Sid: "Allow admin of the key"
+          Effect: "Allow"
+          Principal:
+            AWS:
+            - !Sub "arn:aws:iam::${AWS::AccountId}:root"
+          Action:
+          - "kms:*"
+          Resource: "*"
+  CreditGuideBucketKmsKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName:
+        !Sub 'alias/${AWS::AccountId}-${Environment}-creditguide-key'
+      TargetKeyId: !Ref CreditGuideBucketKmsKey
+
+Outputs:
+  CreditGuideBucketName:
+    Value: !Ref CreditGuideBucket
+    Export:
+      Name: !Sub ${Environment}-CreditGuideBucketName
+  CreditGuideBucketARN:
+    Value: !GetAtt CreditGuideBucket.Arn
+    Export:
+      Name: !Sub ${Environment}-CreditGuideBucketArn
+  CreditGuideBucketKmsKeyArn:
+    Value: !GetAtt CreditGuideBucketKmsKey.Arn
+    Export:
+      Name: !Sub ${Environment}-CreditGuideBucketKmsKeyArn

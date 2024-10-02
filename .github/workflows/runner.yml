@@ -1,0 +1,90 @@
+name: Terragrunt Deploy
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Env to deploy to"
+        required: true
+        default: "dev"
+      path:
+        description: "path to apply terragrunt relative to env (dev/uat/prod) will be prefixed from env"
+        required: true
+      aws_region:
+        default: "ap-southeast-2"
+        required: true
+      tg_parallism:
+        default: 2
+        required: true
+jobs:
+  deploy:
+    runs-on: ubuntu-20.04
+    env:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+    steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - name: Env Setup
+        run: |
+          echo "ENV: ${{ github.event.inputs.environment }}"
+          echo "Path: ${{ github.event.inputs.path }}"
+          export ROLE_VAR_NAME="AWS_ROLE_ARN_$(echo '${{ github.event.inputs.environment }}' | awk '{print toupper($0)}')"
+          echo "AWS_ROLE_NAME=$ROLE_VAR_NAME" >> $GITHUB_ENV
+          export TERRAGRUNT_APPLY_PATH="env/${{ github.event.inputs.environment }}/${{ github.event.inputs.path }}"
+          echo "TG_PATH=$TERRAGRUNT_APPLY_PATH" >> $GITHUB_ENV
+
+      - name: Install Python
+        uses: actions/setup-python@v2
+        with:
+          python-version: 3.7.8
+
+      - name: Install AWS CLI And Boto3
+        uses: BSFishy/pip-action@v1
+        with:
+          packages: |
+            awscli
+            boto3
+
+      - name: Configure AWS CLI
+        run: |
+          aws configure set aws_access_key_id ${{secrets.AWS_ACCESS_KEY_ID}}
+          aws configure set aws_secret_access_key ${{secrets.AWS_SECRET_ACCESS_KEY}}
+          aws configure set region ${{ github.event.inputs.aws_region }} --profile ${{ github.event.inputs.environment }}
+          aws configure set source_profile default --profile ${{ github.event.inputs.environment }}
+          aws configure set role_arn ${{secrets[env.AWS_ROLE_NAME]}} --profile ${{ github.event.inputs.environment }}
+
+      - name: Install Terraform
+        uses: autero1/action-terraform@v1.0.0
+        with:
+          terraform_version: 0.14.9
+      - name: Install Terragrunt
+        uses: autero1/action-terragrunt@v1.0.1
+        with:
+          terragrunt_version: 0.28.8
+      - name: Sops Binary Installer
+        uses: mdgreenwald/mozilla-sops-action@v1
+        with:
+          version: 3.6.1
+      - name: Installed Candidates
+        run: |
+          aws --version
+          python --version
+          pip --version
+          terraform --version
+          terragrunt --version
+          sops --version
+          cat ~/.aws/credentials
+          cat ~/.aws/config
+      - name: TG APPLY WITH AUTO INIT
+        working-directory: ${{env.TG_PATH}}
+        run: |
+          terragrunt apply-all --terragrunt-non-interactive --terragrunt-log-level debug --terragrunt-debug --terragrunt-ignore-external-dependencies --terragrunt-parallelism ${{ github.event.inputs.tg_parallism }}
+      - name: Slack Notifications
+        uses: act10ns/slack@v1
+        with:
+          status: ${{ job.status }}
+          steps: ${{ toJson(steps) }}
+          channel: "#devops-internal"
+        if: always()

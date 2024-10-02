@@ -1,0 +1,319 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Gandalf decision engine
+Parameters:
+  Environment:
+    Type: String
+    Description: "The environment to deploy to"
+    Default: "dev"
+  App:
+    Type: String
+    Default: gandalf
+  Url:
+    Type: String
+    Default: gandalf
+  # Cluster Params
+  InstanceSize:
+    Type: String
+    Description: The size of the required EC2 instances
+    Default: t2.small
+  ClusterMin:
+    Type: Number
+    Description: The minimum number of machines required in this compute cluster
+    Default: "1"
+  ClusterMax:
+    Type: Number
+    Description: The maximum number of machines required in this compute cluster
+    Default: "1"
+  Ami:
+    Type: AWS::EC2::Image::Id
+    Description: The Current Base image AMI ID
+  deploymentId:
+    Type: String
+    Description: Deployment ID
+    Default: 535662744569
+  ACMCertificateARN:
+    Type: String
+    Description: SSL certificate for Dev Domain
+    Default: arn:aws:acm:ap-southeast-2:535662744569:certificate/fbd55fcc-245d-4f68-92c9-49d5d7e56703
+Resources:
+  LaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      KeyName: !Sub ${Environment}
+      ImageId: !Ref Ami
+      IamInstanceProfile: !Ref InstanceProfile
+      SecurityGroups:
+        - Fn::ImportValue: !Sub ${Environment}-MongoDbAccessSecurityGroup
+        - !Ref Ec2SecurityGroup
+        - Fn::ImportValue: !Sub ${Environment}-VpnAccess
+      InstanceType: !Ref InstanceSize
+      UserData:
+        Fn::Base64: !Sub
+          - |
+            #!/bin/bash -eu
+            instance_id=$(curl http://169.254.169.254/latest/meta-data/instance-id)
+            ip_address=$(curl http://169.254.169.254/latest/meta-data/local-ipv4)
+
+            # Notification of startup events
+            aws sns publish \
+                --topic-arn "${SNS_NOTIFY}" \
+                --region "${AWS::Region}" \
+                --subject "Launch new EC2" \
+                --message "${Environment} - Gandalf (${deploymentId}) is starting on ${!instance_id} (${!ip_address})"
+
+            # Download / configure cloudwatch logs before we do anything else
+            cd /tmp
+            wget https://s3.amazonaws.com/aws-cloudwatch/downloads/latest/awslogs-agent-setup.py
+            cat >> /tmp/awslogs1.conf << 'AWSLOG'
+            [general]
+            state_file = /var/awslogs/state/agent-state
+            [/var/log/cloud-init-output] 
+            file = /var/log/cloud-init-output.log 
+            log_stream_name = ec2_id/cloud-init-output
+            initial_position = start_of_file
+            log_group_name = ${LOG_GROUP}
+            [/var/log/nginx-error-logs] 
+            file = /var/log/nginx/error.log 
+            log_stream_name = ec2_id/nginx-logs
+            initial_position = start_of_file
+            log_group_name = ${LOG_GROUP}
+            [/var/log/php-fpm-logs]
+            file = /var/log/php-fpm/7.1/error.log 
+            log_stream_name = ec2_id/php-fpm-error-logs
+            initial_position = start_of_file
+            log_group_name = ${LOG_GROUP}
+            AWSLOG
+
+            sed -i "s/ec2_id/$instance_id/g" /tmp/awslogs1.conf
+
+            python /tmp/awslogs-agent-setup.py -n -r ap-southeast-2 -c /tmp/awslogs1.conf
+
+            # Default to failure, check for success
+            success_status="false"
+            sns_subject="Launch new EC2 - Failure"
+            sns_message="${Environment} - Gandalf boot HAS FAILED on ${!instance_id}"
+
+            if [[ "${!?}" == "0" ]]; then
+              success_status="true"
+              sns_subject="Launch new EC2 - Success"
+              sns_message="${Environment} - Gandalf boot was successful on ${!instance_id}"
+            fi
+            set -e
+            # Send SNS notification and CFN signal
+            aws sns publish \
+              --topic-arn "${SNS_NOTIFY}" \
+              --region "${AWS::Region}" \
+              --subject "${!sns_subject}" \
+              --message "${!sns_message}"
+
+            # CFN signal is fire and forget, so not fussed about errors in it
+            set +e
+            /opt/aws/bin/cfn-signal \
+              --success "${!success_status}" \
+              --stack "${AWS::StackName}" \
+              --region "${AWS::Region}" \
+              --resource "WebServerGroup"
+            set -e
+
+            # Decrypt env variables from encrypted files
+            aws kms decrypt --ciphertext-blob fileb:///var/www/gandalf.web/env.${Environment}.encrypted --region ap-southeast-2 --output text --query Plaintext | base64 --decode > /var/www/gandalf.web/.env
+            aws kms decrypt --ciphertext-blob fileb:///var/www/gandalf.api/env.${Environment}.encrypted --region ap-southeast-2 --output text --query Plaintext | base64 --decode > /var/www/gandalf.api/.env
+
+            # Restart services
+            su ec2-user
+            pm2 restart server --update-env
+
+          - SNS_NOTIFY:
+              Fn::ImportValue: !Sub "${Environment}-DevOpsNotifications"
+            LOG_GROUP: !Sub "${Environment}-${App}"
+  RootRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "ec2.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Path: "/"
+      ManagedPolicyArns:
+        - Fn::ImportValue: !Sub ${Environment}-ApplicationPolicy
+        - "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+        - "arn:aws:iam::aws:policy/SecretsManagerReadWrite"
+
+  InstanceProfile:
+    Type: "AWS::IAM::InstanceProfile"
+    Properties:
+      Path: "/"
+      Roles:
+        - !Ref RootRole
+
+  Ec2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow inbound traffic from ELB
+      VpcId:
+        Fn::ImportValue: !Sub ${Environment}-Vpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref ElbSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref ElbSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          SourceSecurityGroupId: !Ref ElbSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 8443
+          ToPort: 8443
+          SourceSecurityGroupId: !Ref ElbSecurityGroup
+
+  ElbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow inbound traffic from internet
+      VpcId:
+        Fn::ImportValue: !Sub ${Environment}-Vpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 8443
+          ToPort: 8443
+          CidrIp: 0.0.0.0/0
+
+  # Compute Cluster
+  WebServerGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    UpdatePolicy:
+      AutoScalingReplacingUpdate:
+        WillReplace: True
+    CreationPolicy:
+      ResourceSignal:
+        Count: "1"
+        Timeout: PT10M
+    Properties:
+      VPCZoneIdentifier:
+        - Fn::ImportValue: !Sub ${Environment}-PrivateSubnetA
+        - Fn::ImportValue: !Sub ${Environment}-PrivateSubnetB
+        - Fn::ImportValue: !Sub ${Environment}-PrivateSubnetC
+      LaunchConfigurationName: !Ref LaunchConfig
+      MinSize: !Ref ClusterMin
+      MaxSize: !Ref ClusterMax
+      LoadBalancerNames:
+        - !Ref ElasticLoadBalancer
+      NotificationConfigurations:
+        - TopicARN:
+            Fn::ImportValue: !Sub ${Environment}-DevOpsNotifications
+          NotificationTypes:
+            - autoscaling:EC2_INSTANCE_LAUNCH
+            - autoscaling:EC2_INSTANCE_LAUNCH_ERROR
+            - autoscaling:EC2_INSTANCE_TERMINATE
+            - autoscaling:EC2_INSTANCE_TERMINATE_ERROR
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+          PropagateAtLaunch: true
+        - Key: Name
+          Value: !Sub Gandalf-${Environment}
+          PropagateAtLaunch: true
+
+  ElasticLoadBalancer:
+    Type: AWS::ElasticLoadBalancing::LoadBalancer
+    Properties:
+      Subnets:
+        - Fn::ImportValue: !Sub ${Environment}-PublicSubnetA
+        - Fn::ImportValue: !Sub ${Environment}-PublicSubnetB
+        - Fn::ImportValue: !Sub ${Environment}-PublicSubnetC
+      CrossZone: true
+      LoadBalancerName: !Sub elb-${App}-${Environment}
+      SecurityGroups:
+        - !Ref ElbSecurityGroup
+      Listeners:
+        - LoadBalancerPort: 80
+          InstancePort: 80
+          Protocol: HTTP
+        - LoadBalancerPort: 8080
+          InstancePort: 8080
+          Protocol: HTTP
+        - LoadBalancerPort: 443
+          InstancePort: 80
+          Protocol: HTTPS
+          SSLCertificateId: !Ref ACMCertificateARN
+        - LoadBalancerPort: 8443
+          InstancePort: 8080
+          Protocol: HTTPS
+          SSLCertificateId: !Ref ACMCertificateARN
+      HealthCheck:
+        Target: !Sub HTTP:80/
+        HealthyThreshold: 3
+        UnhealthyThreshold: 5
+        Interval: 30
+        Timeout: 5
+
+  CPUAlarmHigh:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      EvaluationPeriods: "1"
+      Statistic: Average
+      Threshold: "60"
+      AlarmDescription: Alarm if CPU too high
+      Period: "60"
+      AlarmActions:
+        - Fn::ImportValue: !Sub ${Environment}-AlarmSnsArn
+      Namespace: AWS/EC2
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value:
+            Ref: WebServerGroup
+      ComparisonOperator: GreaterThanThreshold
+      MetricName: CPUUtilization
+
+  HealthyHostsIsZero:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      EvaluationPeriods: "1"
+      Statistic: Sum
+      Threshold: "1"
+      AlarmDescription: Alarm if healthy hosts in ELB is zero
+      Period: "60"
+      AlarmActions:
+        - Fn::ImportValue: !Sub ${Environment}-AlarmSnsArn
+      Namespace: AWS/ApplicationELB
+      Dimensions:
+        - Name: LoadBalancer
+          Value:
+            Ref: ElasticLoadBalancer
+      ComparisonOperator: LessThanThreshold
+      MetricName: HealthyHostCount
+
+  ElbDns:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      Type: CNAME
+      TTL: 300
+      ResourceRecords:
+        - !GetAtt ElasticLoadBalancer.DNSName
+      HostedZoneId:
+        Fn::ImportValue: !Sub ${Environment}-PublicHostedZone
+      Name: !Join
+        - .
+        - - !Ref Url
+          - Fn::ImportValue: !Sub ${Environment}-IngressDomain

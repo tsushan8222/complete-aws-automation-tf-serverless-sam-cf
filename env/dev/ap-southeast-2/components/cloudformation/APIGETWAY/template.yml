@@ -1,0 +1,147 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: |
+  Creates APIGW for services.
+
+Parameters:
+  Environment:
+    Type: String
+    Description: The environment to deploy to
+    Default: dev
+  CloudFrontCert:
+    Type: String
+    Default: arn:aws:acm:us-east-1::certificate/
+    Description: ACM cert in us-east-1
+  apigwName:
+    Type: String
+    Description: APIGW name
+    Default: 
+  apigwDomainName:
+    Type: String
+    Description: APIGW name
+    Default: 
+
+Resources:
+  # APIGW
+  ApiGatewayRestApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub ${Environment}-${apigwName}
+
+  # APIGW Custom Domain name
+  AppDomainName:
+    Type: "AWS::ApiGateway::DomainName"
+    Properties:
+      CertificateArn: !Ref CloudFrontCert
+      DomainName: !Ref apigwDomainName
+
+  # Workaround for CORS messages on client side
+  GatewayResponseDefault4XX:
+    Type: "AWS::ApiGateway::GatewayResponse"
+    Properties:
+      ResponseParameters:
+        gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+        gatewayresponse.header.Access-Control-Allow-Headers: "'*'"
+      ResponseType: DEFAULT_4XX
+      RestApiId: !Ref ApiGatewayRestApi
+  GatewayResponseDefault5XX:
+    Type: "AWS::ApiGateway::GatewayResponse"
+    Properties:
+      ResponseParameters:
+        gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+        gatewayresponse.header.Access-Control-Allow-Headers: "'*'"
+      ResponseType: DEFAULT_5XX
+      RestApiId: !Ref ApiGatewayRestApi
+  apiGatewayResource:
+    Type: "AWS::ApiGateway::Resource"
+    Properties:
+      ParentId: !GetAtt "ApiGatewayRestApi.RootResourceId"
+      PathPart: "mock"
+      RestApiId: !Ref "ApiGatewayRestApi"
+
+  apiGatewayRootMethod:
+    Type: "AWS::ApiGateway::Method"
+    Properties:
+      ApiKeyRequired: false
+      AuthorizationType: "NONE"
+      HttpMethod: "GET"
+      Integration:
+        RequestTemplates:
+          application/json: |
+            {"statusCode": 200}
+        IntegrationResponses:
+          - ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: '{"message": "OK"}'
+            StatusCode: 200
+        Type: "MOCK"
+        TimeoutInMillis: 29000
+      MethodResponses:
+        - ResponseModels:
+            application/json: !Ref "apiGatewayModel"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+          StatusCode: 200
+      ResourceId: !Ref "apiGatewayResource"
+      RestApiId: !Ref "ApiGatewayRestApi"
+
+  apiGatewayModel:
+    Type: "AWS::ApiGateway::Model"
+    Properties:
+      ContentType: "application/json"
+      RestApiId: !Ref "ApiGatewayRestApi"
+      Schema: {}
+
+  apiGatewayDeployment:
+    Type: "AWS::ApiGateway::Deployment"
+    DependsOn: "apiGatewayRootMethod"
+    Properties:
+      RestApiId: !Ref "ApiGatewayRestApi"
+
+  apiGatewayStage:
+    Type: "AWS::ApiGateway::Stage"
+    Properties:
+      StageName: !Sub ${Environment}
+      RestApiId: !Ref "ApiGatewayRestApi"
+      DeploymentId: !Ref "apiGatewayDeployment"
+
+  AppMapping:
+    Type: "AWS::ApiGateway::BasePathMapping"
+    Properties:
+      DomainName: !Ref AppDomainName
+      RestApiId: !Ref ApiGatewayRestApi
+      Stage: !Sub ${Environment}
+      BasePath: "(none)"
+    DependsOn: AppDomainName
+
+  # Domain name mapping with Route53
+  Dns:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId:
+        Fn::ImportValue:
+          Fn::Sub: ${Environment}-PublicHostedZone
+      Name: !Ref AppDomainName
+      ResourceRecords:
+        - !GetAtt AppDomainName.DistributionDomainName
+      TTL: 60
+      Type: CNAME
+
+Outputs:
+  ApiGatewayRestApiId:
+    Value: !Ref ApiGatewayRestApi
+    Export:
+      Name: !Sub ${Environment}-${apigwName}-ApiGatewayRestApiId
+
+  ApiGatewayRestApiRootResourceId:
+    Value:
+      Fn::GetAtt:
+        - ApiGatewayRestApi
+        - RootResourceId
+    Export:
+      Name: !Sub ${Environment}-${apigwName}-ApiGatewayRestApiRootResourceId
+
+  DomainName:
+    Value: !Ref apigwDomainName
+    Export:
+      Name: !Sub ${Environment}-${apigwName}-DomainName

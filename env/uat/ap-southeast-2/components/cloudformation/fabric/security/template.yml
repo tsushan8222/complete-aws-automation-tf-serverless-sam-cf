@@ -1,0 +1,49 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Common Security Groups
+
+Parameters:
+
+  Environment:
+    Type: String
+    Description: The environment to deploy to
+    Default: int
+
+Resources:
+
+  MongoDBServerAccessSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId:
+        Fn::ImportValue: !Sub ${Environment}-Vpc
+      GroupDescription: Instances with access to MongoDB servers
+
+  PmxApiAccess:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow access to the PMX APIs directly from within the VPC
+      VpcId:
+        Fn::ImportValue: !Sub ${Environment}-Vpc
+
+  VpnAccess:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Acces to EC2 from the VPN
+      VpcId:
+        Fn::ImportValue: !Sub ${Environment}-Vpc
+
+Outputs:
+  VpnAccess:
+    Description: VPC specific security group for public ELB
+    Value: !Ref VpnAccess
+    Export:
+      Name: !Sub ${Environment}-VpnAccess
+  MongoDBServerAccessSecurityGroup:
+    Description: VPC specific security group for public ELB
+    Value: !Ref MongoDBServerAccessSecurityGroup
+    Export:
+      Name: !Sub ${Environment}-MongoDbAccessSecurityGroup
+  PmxApiAccess:
+    Description: VPC specific security group for public ELB
+    Value: !Ref PmxApiAccess
+    Export:
+      Name: !Sub ${Environment}-pmx-ApiAccess

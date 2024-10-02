@@ -1,0 +1,126 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Parameters:
+  Environment:
+    Type: String
+    Description: "The environment to deploy to"
+    Default: "dev"
+Resources:
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: !Sub
+          - |
+            import boto3
+            import json
+            from urllib import request, parse
+            region = 'ap-southeast-2'
+            ec2 = boto3.client('ec2', region_name=region)
+            instance_lists = ['OpenVPN-${Environment}','Policymatrix-${Environment}','Gandalf-${Environment}', 'HLE Wordpress site']
+
+            def list_instances_by_tag_value(tagkey, tagvalue):
+                # When passed a tag key, tag value this will return a list of InstanceIds that were found.
+                response = ec2.describe_instances(
+                    Filters=[
+                        {
+                            'Name': 'tag:'+tagkey,
+                            'Values': [tagvalue]
+                        }
+                    ]
+                )
+                instancelist = []
+                for reservation in (response["Reservations"]):
+                    for instance in reservation["Instances"]:
+                        instancelist.append(instance["InstanceId"])
+                return instancelist
+
+            def disable_asg_groups():
+              client = boto3.client('autoscaling',region_name=region)
+              asgs = client.describe_auto_scaling_groups()['AutoScalingGroups']
+              for asg in asgs:
+                print(asg['LaunchConfigurationName'])
+                client.suspend_processes(AutoScalingGroupName=asg)
+            
+            def lambda_handler(event, context):
+                # Disable autoscaling groups
+                disable_asg_groups()
+                for instance_name in instance_lists:
+                    instance = list_instances_by_tag_value('Name',instance_name)                  
+                    ec2.stop_instances(InstanceIds=instance)
+                    print('Stopped instance: ' + str(instance))
+                    # SENDING MESSAGE TO SLACK CHANNEL
+                    send_message_to_slack(f"CostSaving Automation: EC2 {instance_name} has successfully stopped!")
+            
+            def send_message_to_slack(text):
+                post = {"text": "{0}".format(text)}
+                try:
+                    json_data = json.dumps(post)
+                    req = request.Request("${SLACK_CHANNEL}",
+                                        data=json_data.encode('ascii'),
+                                        headers={'Content-Type': 'application/json'}) 
+                    resp = request.urlopen(req)
+                except Exception as em:
+                    print("EXCEPTION: " + str(em))
+          - SLACK_CHANNEL: '{{resolve:ssm:slack-devops-messages-channel:1}}'
+      Runtime: python3.7
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+      Policies:
+      - PolicyName: root
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - logs:*
+            Resource: arn:aws:logs:*:*:*
+      - PolicyName: lambda-ec2-automate-policy
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+             - ec2:Start*
+             - ec2:Stop*
+             - ec2:DescribeInstances
+             - ec2:DescribeTags
+             - autoscaling:DescribeAutoScalingGroups
+             - autoscaling:CompleteLifecycleAction
+            Resource: "*"
+  ScheduledRule: 
+    Type: AWS::Events::Rule
+    Properties: 
+        Description: "ScheduledRule"
+        ScheduleExpression: "cron(30 12 * * ? *)"
+        State: "ENABLED"
+        Targets: 
+        - 
+            Arn: 
+                Fn::GetAtt: 
+                    - "LambdaFunction"
+                    - "Arn"
+            Id: "TargetFunctionV1"
+  PermissionForEventsToInvokeLambda: 
+    Type: AWS::Lambda::Permission
+    Properties: 
+        FunctionName: 
+            Ref: "LambdaFunction"
+        Action: "lambda:InvokeFunction"
+        Principal: "events.amazonaws.com"
+        SourceArn: 
+            Fn::GetAtt: 
+                - "ScheduledRule"
+                - "Arn"

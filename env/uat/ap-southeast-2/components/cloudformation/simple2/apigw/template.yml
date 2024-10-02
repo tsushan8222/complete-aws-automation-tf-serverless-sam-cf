@@ -1,0 +1,303 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: |
+  Creates APIGW for workbench services.
+
+Parameters:
+  Environment:
+    Type: String
+    Description: The environment to deploy to
+    Default: dev
+  CloudFrontCert:
+    Type: String
+    Default: arn:aws:acm:us-east-1:535662744569:certificate/b02285ad-584d-4dd6-8746-0c86441399b5
+    Description: ACM cert in us-east-1
+  apigwName:
+    Type: String
+    Description: APIGW name
+    Default: workbench
+  apigwDomainName:
+    Type: String
+    Description: APIGW name
+    Default: workbench-api.dev.homeloanexperts.net.au
+
+Resources:
+  # APIGW
+  ApiGatewayRestApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub ${Environment}-${apigwName}
+
+  # APIGW Custom Domain name
+  AppDomainName:
+    Type: "AWS::ApiGateway::DomainName"
+    Properties:
+      CertificateArn: !Ref CloudFrontCert
+      DomainName: !Ref apigwDomainName
+
+  # Workaround for CORS messages on client side
+  GatewayResponseDefault4XX:
+    Type: "AWS::ApiGateway::GatewayResponse"
+    Properties:
+      ResponseParameters:
+        gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+        gatewayresponse.header.Access-Control-Allow-Headers: "'*'"
+      ResponseType: DEFAULT_4XX
+      RestApiId: !Ref ApiGatewayRestApi
+  GatewayResponseDefault5XX:
+    Type: "AWS::ApiGateway::GatewayResponse"
+    Properties:
+      ResponseParameters:
+        gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+        gatewayresponse.header.Access-Control-Allow-Headers: "'*'"
+      ResponseType: DEFAULT_5XX
+      RestApiId: !Ref ApiGatewayRestApi
+  apiGatewayResource:
+    Type: "AWS::ApiGateway::Resource"
+    Properties:
+      ParentId: !GetAtt "ApiGatewayRestApi.RootResourceId"
+      PathPart: "mock"
+      RestApiId: !Ref "ApiGatewayRestApi"
+
+  apiGatewayRootMethod:
+    Type: "AWS::ApiGateway::Method"
+    Properties:
+      ApiKeyRequired: false
+      AuthorizationType: "NONE"
+      HttpMethod: "GET"
+      Integration:
+        RequestTemplates:
+          application/json: |
+            {"statusCode": 200}
+        IntegrationResponses:
+          - ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: '{"message": "OK"}'
+            StatusCode: 200
+        Type: "MOCK"
+        TimeoutInMillis: 29000
+      MethodResponses:
+        - ResponseModels:
+            application/json: !Ref "apiGatewayModel"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+          StatusCode: 200
+      ResourceId: !Ref "apiGatewayResource"
+      RestApiId: !Ref "ApiGatewayRestApi"
+
+  apiGatewayModel:
+    Type: "AWS::ApiGateway::Model"
+    Properties:
+      ContentType: "application/json"
+      RestApiId: !Ref "ApiGatewayRestApi"
+      Schema: {}
+
+  apiGatewayDeployment:
+    Type: "AWS::ApiGateway::Deployment"
+    DependsOn: "apiGatewayRootMethod"
+    Properties:
+      RestApiId: !Ref "ApiGatewayRestApi"
+
+  ApiGwExecutionLog: 
+    Type: AWS::Logs::LogGroup
+    Properties: 
+      RetentionInDays: 90
+      LogGroupName: !Sub api-gateway-access-logs-${AWS::StackName}
+
+  apiGatewayStage:
+    Type: "AWS::ApiGateway::Stage"
+    Properties:
+      StageName: !Sub ${Environment}
+      RestApiId: !Ref "ApiGatewayRestApi"
+      DeploymentId: !Ref "apiGatewayDeployment"
+      AccessLogSetting:
+        DestinationArn: !GetAtt ApiGwExecutionLog.Arn
+        Format: '{"requestTime":"$context.requestTime","requestId":"$context.requestId","httpMethod":"$context.httpMethod","path":"$context.path","resourcePath":"$context.resourcePath","status":"$context.status","responseLatency":"$context.responseLatency","xrayTraceId":"$context.xrayTraceId","integrationRequestId":"$context.integration.requestId","functionResponseStatus":"$context.integration.status","integrationLatency":"$context.integration.latency","integrationServiceStatus":"$context.integration.integrationStatus","authorizeResultStatus":"$context.authorize.status","authorizerServiceStatus":"$context.authorizer.status","authorizerLatency":"$context.authorizer.latency","authorizerRequestId":"$context.authorizer.requestId","ip":"$context.identity.sourceIp","userAgent":"$context.identity.userAgent","principalId":"$context.authorizer.principalId","cognitoUser":"$context.identity.cognitoIdentityId","user":"$context.identity.user"}'
+      TracingEnabled: true
+      MethodSettings:
+        - LoggingLevel: INFO # ERROR/INFO level logging 
+          ResourcePath: '/*' # allows for logging on any resource
+          HttpMethod: '*' # allows for logging on any method
+          DataTraceEnabled: true # enabling Log full requests/responses data in console
+          MetricsEnabled: true    # Enable detailed metrics (error 404, latency, ...)
+
+  AuthorizerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Action:
+              - "sts:AssumeRole"
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "apigateway.amazonaws.com"
+      Policies:
+        - PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Action:
+                  - "lambda:invokeFunction"
+                Effect: "Allow"
+                Resource:
+                  - !ImportValue
+                    "Fn::Sub": "${Environment}-WorkbenchAuthorizerArn"
+          PolicyName: "lambda"
+
+  FourCornerAuthorizerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Action:
+              - "sts:AssumeRole"
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "apigateway.amazonaws.com"
+      Policies:
+        - PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Action:
+                  - "lambda:invokeFunction"
+                Effect: "Allow"
+                Resource:
+                  - !ImportValue
+                    "Fn::Sub": "${Environment}-FourCornerAuthorizerArn"
+          PolicyName: "lambda"
+
+  APIKeyAuthorizerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Action:
+              - "sts:AssumeRole"
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "apigateway.amazonaws.com"
+      Policies:
+        - PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Action:
+                  - "lambda:invokeFunction"
+                Effect: "Allow"
+                Resource:
+                  - !ImportValue
+                    "Fn::Sub": "${Environment}-WorkbenchAPIKeyAuthorizerArn"
+          PolicyName: "lambda"
+
+  WorkbenchAuthorizer:
+    Type: AWS::ApiGateway::Authorizer
+    Properties:
+      IdentitySource: "method.request.header.authorisationtoken"
+      AuthorizerResultTtlInSeconds: 0
+      AuthorizerCredentials: !GetAtt "AuthorizerRole.Arn"
+      Name: WorkbenchAuthorizer
+      RestApiId: !Ref "ApiGatewayRestApi"
+      Type: REQUEST
+      AuthorizerUri: !Join
+        - ""
+        - - "arn:aws:apigateway:"
+          - !Ref "AWS::Region"
+          - ":lambda:path/2015-03-31/functions/"
+          - !ImportValue
+            "Fn::Sub": "${Environment}-WorkbenchAuthorizerArn"
+          - /invocations
+
+  FourCornerAuthorizer:
+    Type: AWS::ApiGateway::Authorizer
+    Properties:
+      IdentitySource: "method.request.header.authorisationtoken"
+      AuthorizerResultTtlInSeconds: 0
+      AuthorizerCredentials: !GetAtt "FourCornerAuthorizerRole.Arn"
+      Name: FourCornerAuthorizer
+      RestApiId: !Ref "ApiGatewayRestApi"
+      Type: REQUEST
+      AuthorizerUri: !Join
+        - ""
+        - - "arn:aws:apigateway:"
+          - !Ref "AWS::Region"
+          - ":lambda:path/2015-03-31/functions/"
+          - !ImportValue
+            "Fn::Sub": "${Environment}-FourCornerAuthorizerArn"
+          - /invocations
+
+  WorkbenchAPIKeyAuthorizer:
+    Type: AWS::ApiGateway::Authorizer
+    Properties:
+      IdentitySource: "method.request.querystring.api-key"
+      AuthorizerResultTtlInSeconds: 0
+      AuthorizerCredentials: !GetAtt "APIKeyAuthorizerRole.Arn"
+      Name: WorkbenchAPIKeyAuthorizer
+      RestApiId: !Ref "ApiGatewayRestApi"
+      Type: REQUEST
+      AuthorizerUri: !Join
+        - ""
+        - - "arn:aws:apigateway:"
+          - !Ref "AWS::Region"
+          - ":lambda:path/2015-03-31/functions/"
+          - !ImportValue
+            "Fn::Sub": "${Environment}-WorkbenchAPIKeyAuthorizerArn"
+          - /invocations
+
+  AppMapping:
+    Type: "AWS::ApiGateway::BasePathMapping"
+    Properties:
+      DomainName: !Ref AppDomainName
+      RestApiId: !Ref ApiGatewayRestApi
+      Stage: !Sub ${Environment}
+      BasePath: "(none)"
+    DependsOn: AppDomainName
+  # Domin name mapping with Route53
+  Dns:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId:
+        Fn::ImportValue:
+          Fn::Sub: ${Environment}-PublicHostedZone
+      Name: !Ref AppDomainName
+      ResourceRecords:
+        - !GetAtt AppDomainName.DistributionDomainName
+      TTL: 60
+      Type: CNAME
+
+Outputs:
+  ApiGatewayRestApiId:
+    Value: !Ref ApiGatewayRestApi
+    Export:
+      Name: !Sub ${Environment}-${apigwName}-ApiGatewayRestApiId
+
+  ApiGatewayRestApiRootResourceId:
+    Value:
+      Fn::GetAtt:
+        - ApiGatewayRestApi
+        - RootResourceId
+    Export:
+      Name: !Sub ${Environment}-${apigwName}-ApiGatewayRestApiRootResourceId
+
+  WorkbenchAuthorizer:
+    Value: !Ref WorkbenchAuthorizer
+    Export:
+      Name: !Sub ${Environment}-${apigwName}-WorkbenchAuthorizer
+
+  FourCornerAuthorizer:
+    Value: !Ref FourCornerAuthorizer
+    Export:
+      Name: !Sub ${Environment}-${apigwName}-FourCornerAuthorizer
+
+  WorkbenchAPIKeyAuthorizer:
+    Value: !Ref WorkbenchAPIKeyAuthorizer
+    Export:
+      Name: !Sub ${Environment}-${apigwName}-WorkbenchAPIKeyAuthorizer
+
+  DomainName:
+    Value: !Ref apigwDomainName
+    Export:
+      Name: !Sub ${Environment}-${apigwName}-DomainName

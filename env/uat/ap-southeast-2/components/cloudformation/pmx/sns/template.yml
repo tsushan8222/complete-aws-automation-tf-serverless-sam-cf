@@ -1,0 +1,20 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: All components requires to run batch processing in Class
+Parameters:
+  Environment:
+    Type: String
+    Description: "The environment to deploy to"
+    Default: "dev"
+
+Resources:
+  ImporterSNS:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub ${Environment}-niche-import-notifications
+
+Outputs:
+  ImporterSNS:
+    Description: VPC specific security group
+    Value: !Ref ImporterSNS
+    Export:
+      Name: !Sub ${Environment}-ImporterSNS

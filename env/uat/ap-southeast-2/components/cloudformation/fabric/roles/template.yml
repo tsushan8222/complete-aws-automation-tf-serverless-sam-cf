@@ -1,0 +1,140 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Generic Roles and policies for deployment actions
+Parameters:
+  Environment:
+    Type: String
+    Description: "The environment to deploy to"
+    Default: "dev"
+  # BuildRoleArn:
+  #   Type: String
+  #   Description: 'The robot role that is used to remotely deploy the system'
+
+Resources:
+  # Role
+  # DevOpsRole:
+  #   Type: "AWS::IAM::Role"
+  #   Properties:
+  #     RoleName: !Sub ${Environment}-DevOpsRole
+  #     AssumeRolePolicyDocument:
+  #       Version: '2012-10-17'
+  #       Statement:
+  #       - Effect: Allow
+  #         Principal:
+  #           AWS: !Ref BuildRoleArn
+  #         Action:
+  #         - sts:AssumeRole
+  #     Path: "/"
+  #     Policies:
+  #     - PolicyName: root
+  #       PolicyDocument:
+  #         Version: "2012-10-17"
+  #         Statement:
+  #         - Effect: "Allow"
+  #           Action: "*"
+  #           Resource: "*"
+
+  ApplicationPolicy:
+    Type: "AWS::IAM::ManagedPolicy"
+    Properties:
+      Description: Runtime permissions common to all PingCloud applications
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - ses:SendEmail
+              - ses:SendTemplatedEmail
+              - ses:SendRawEmail
+              - ses:SendBulkTemplatedEmail
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - ec2:DescribeInstances
+              - ec2:DescribeTags
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - ec2:CreateTags
+              - ec2:DeleteTags
+            Resource: !Join
+              - ":"
+              - - "arn:aws:ec2"
+                - !Ref "AWS::Region"
+                - !Ref "AWS::AccountId"
+                - "instance/*"
+          - Effect: Allow
+            Action:
+              - s3:GetObject
+            Resource: !Join
+              - ""
+              - - Fn::ImportValue: !Sub ${Environment}-RuntimeBucketArn
+                - "/*"
+          - Effect: Allow
+            Action:
+              - s3:PutObject
+            Resource: !Join
+              - ""
+              - - Fn::ImportValue: !Sub ${Environment}-LoggingBucketArn
+                - "/*"
+          - Effect: "Allow"
+            Action:
+              - "SNS:Publish"
+            Resource:
+              - Fn::ImportValue: !Sub ${Environment}-DevOpsNotifications
+          - Effect: "Allow"
+            Action:
+              - "kms:Decrypt"
+            Resource:
+              - Fn::ImportValue: !Sub ${Environment}-CredentialKmsKeyArn
+          - Effect: "Allow"
+            Action:
+              - "kms:Encrypt"
+            Resource:
+              - Fn::ImportValue: !Sub ${Environment}-LoggingBucketKmsKeyArn
+          - Effect: "Allow"
+            Action:
+              - "kms:Decrypt"
+            Resource:
+              - Fn::ImportValue: !Sub ${Environment}-RuntimeBucketKmsKeyArn
+          - Effect: Allow
+            Action:
+              - "logs:CreateLogGroup"
+              - "logs:CreateLogStream"
+              - "logs:Describe*"
+              - "logs:Put*"
+            Resource: "*"
+          # SSM
+          - Effect: Allow
+            Action:
+              - "ssm:DescribeAssociation"
+              - "ssm:GetDeployablePatchSnapshotForInstance"
+              - "ssm:GetDocument"
+              - "ssm:GetParameters"
+              - "ssm:ListAssociations"
+              - "ssm:ListInstanceAssociations"
+              - "ssm:PutInventory"
+              - "ssm:UpdateAssociationStatus"
+              - "ssm:UpdateInstanceAssociationStatus"
+              - "ssm:UpdateInstanceInformation"
+              - "ec2messages:AcknowledgeMessage"
+              - "ec2messages:DeleteMessage"
+              - "ec2messages:FailMessage"
+              - "ec2messages:GetEndpoint"
+              - "ec2messages:GetMessages"
+              - "ec2messages:SendReply"
+            Resource: "*"
+      ManagedPolicyName: !Sub ${Environment}-ApplicationPolicy
+
+Outputs:
+  # DevOpsRole:
+  #   Description: DevOpsRole
+  #   Value: !GetAtt DevOpsRole.Arn
+  #   Export:
+  #     Name:
+  #       !Sub "${Environment}-DevOpsRole"
+
+  ApplicationPolicy:
+    Description: ApplicationPolicy
+    Value: !Ref ApplicationPolicy
+    Export:
+      Name: !Sub "${Environment}-ApplicationPolicy"

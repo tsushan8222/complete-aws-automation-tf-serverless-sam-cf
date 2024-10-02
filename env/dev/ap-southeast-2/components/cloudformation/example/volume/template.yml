@@ -1,0 +1,66 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Creates a new volume and mount target to for  uploads folder
+Parameters:
+  Environment:
+    Type: String
+    Description: "HLE uploads volume"
+    Default: "dev"
+Resources:
+  UploadsVolume:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      Encrypted: false
+      FileSystemTags:
+        - Key: Name
+          Value: example-uploads
+  EFSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId:
+        Fn::ImportValue: !Sub ${Environment}-Vpc
+      GroupDescription: Security group for mount target
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: "2049"
+          ToPort: "2049"
+          CidrIp: 0.0.0.0/0
+
+  MountTargetA:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref UploadsVolume
+      SubnetId:
+        Fn::ImportValue: !Sub ${Environment}-PrivateSubnetA
+      SecurityGroups: 
+      - !Ref EFSSecurityGroup
+  MountTargetB:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref UploadsVolume
+      SubnetId:
+        Fn::ImportValue: !Sub ${Environment}-PrivateSubnetB
+      SecurityGroups: 
+      - !Ref EFSSecurityGroup
+  MountTargetC:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref UploadsVolume
+      SubnetId:
+        Fn::ImportValue: !Sub ${Environment}-PrivateSubnetC
+      SecurityGroups: 
+      - !Ref EFSSecurityGroup
+
+Outputs:
+  MountTargetA:
+    Description: Mount target ID
+    Value: !Ref MountTargetA
+  MountTargetB:
+    Description: Mount target ID
+    Value: !Ref MountTargetB
+  MountTargetC:
+    Description: Mount target ID
+    Value: !Ref MountTargetC
+  UploadsVolumeName:
+    Value: !Ref UploadsVolume
+    Export:
+      Name: !Sub ${Environment}-hle-UploadsVolume

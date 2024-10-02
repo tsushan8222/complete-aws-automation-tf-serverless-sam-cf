@@ -1,0 +1,123 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: S3 buckets used for deployment and logs
+Parameters:
+  Environment:
+    Type: String
+    Description: "The environment to deploy to"
+    Default: "dev"
+
+Resources:
+  LoggingBucket:
+    Type: "AWS::S3::Bucket"
+    Properties:
+      BucketName: !Sub '${AWS::AccountId}-${Environment}-logging-${AWS::Region}'
+  LoggingBucketPolicy:
+    Type: "AWS::S3::BucketPolicy"
+    Properties:
+      Bucket: !Ref LoggingBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Id: "PutObjBucketPolicy"
+        Statement:
+        - Sid: "DenyUnEncryptedObjectUploads"
+          Effect: "Deny"
+          Principal: "*"
+          Action: "s3:PutObject"
+          Resource: !Join ["", [!GetAtt LoggingBucket.Arn, "/*"]]
+          Condition:
+            StringNotEquals:
+              s3:x-amz-server-side-encryption: "aws:kms"
+  LoggingBucketKmsKey:
+    Type: "AWS::KMS::Key"
+    Properties:
+      Description: KMS key used to encrypt Account Log bucket
+      KeyPolicy:
+        Version: "2012-10-17"
+        Id: "AdminKeyPolicy"
+        Statement:
+        - Sid: "Allow admin of the key"
+          Effect: "Allow"
+          Principal:
+            AWS:
+            - !Sub "arn:aws:iam::${AWS::AccountId}:root"
+          Action:
+          - "kms:*"
+          Resource: "*"
+  LoggingBucketKmsKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName:
+        !Sub 'alias/${AWS::AccountId}-${Environment}-logging-key-${AWS::Region}'
+      TargetKeyId: !Ref LoggingBucketKmsKey
+
+  RuntimeBucket:
+    Type: "AWS::S3::Bucket"
+    Properties:
+      BucketName: !Sub '${AWS::AccountId}-${Environment}-runtime-${AWS::Region}'
+  RuntimeBucketPolicy:
+    Type: "AWS::S3::BucketPolicy"
+    Properties:
+      Bucket: !Ref RuntimeBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Id: "PutObjBucketPolicy"
+        Statement:
+        - Sid: "DenyUnEncryptedObjectUploads"
+          Effect: "Deny"
+          Principal: "*"
+          Action: "s3:PutObject"
+          Resource: !Join ["", [!GetAtt RuntimeBucket.Arn, "/*"]]
+          Condition:
+            StringNotEquals:
+              s3:x-amz-server-side-encryption: "aws:kms"
+  RuntimeBucketKmsKey:
+    Type: "AWS::KMS::Key"
+    Properties:
+      Description: KMS key used to encrypt runtime bucket
+      KeyPolicy:
+        Version: "2012-10-17"
+        Id: "AdminKeyPolicy"
+        Statement:
+        - Sid: "Allow admin of the key"
+          Effect: "Allow"
+          Principal:
+            AWS:
+            - !Sub "arn:aws:iam::${AWS::AccountId}:root"
+          Action:
+          - "kms:*"
+          Resource: "*"
+  RuntimeBucketKmsKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName:
+        !Sub 'alias/${AWS::AccountId}-${Environment}-runtime-key-${AWS::Region}'
+      TargetKeyId: !Ref RuntimeBucketKmsKey
+
+Outputs:
+  LoggingBucketName:
+    Value: !Ref LoggingBucket
+    Export:
+      Name: !Sub ${Environment}-LoggingBucketName
+  LoggingBucketARN:
+    Value: !GetAtt LoggingBucket.Arn
+    Export:
+      Name: !Sub ${Environment}-LoggingBucketArn
+  LoggingBucketKmsKeyArn:
+    Value: !GetAtt LoggingBucketKmsKey.Arn
+    Export:
+      Name: !Sub ${Environment}-LoggingBucketKmsKeyArn
+
+  RuntimeBucketName:
+    Description: The S3 bucket containing the runtime files
+    Value: !Ref RuntimeBucket
+    Export:
+      Name: !Sub ${Environment}-RuntimeBucketName
+  RuntimeBucketARN:
+    Description: ARN of S3 bucket containing the runtime files
+    Value: !GetAtt RuntimeBucket.Arn
+    Export:
+      Name: !Sub ${Environment}-RuntimeBucketArn
+  RuntimeBucketKmsKeyArn:
+    Value: !GetAtt RuntimeBucketKmsKey.Arn
+    Export:
+      Name: !Sub ${Environment}-RuntimeBucketKmsKeyArn

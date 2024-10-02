@@ -1,0 +1,188 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Fault Tolerant instance of OpenVpn to allow access to internal VPC elements
+
+Parameters:
+  Environment:
+    Type: String
+    Description: The environment to deploy to
+  InstanceType:
+    Type: String
+    Description: The size of the required EC2 instances
+    Default: t2.small
+  LinuxAMI:
+    Type: AWS::EC2::Image::Id
+  ApplicationRole:
+    Type: String
+    Default: ovpn
+  AwsRegion:
+    Type: String
+    Description: Aws Region
+    Default: ap-southeast-2
+
+Resources:
+  VpnElbSecurity:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Internet access to the VPN ELB
+      VpcId:
+        Fn::ImportValue: !Sub ${Environment}-Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub VpnElbSecurity.${Environment}
+      SecurityGroupIngress:
+        - CidrIp: 0.0.0.0/0
+          FromPort: 22
+          IpProtocol: tcp
+          ToPort: 22
+        - CidrIp: 0.0.0.0/0
+          FromPort: 1194
+          IpProtocol: tcp
+          ToPort: 1194
+        - CidrIp: 0.0.0.0/0
+          FromPort: 443
+          IpProtocol: tcp
+          ToPort: 443
+
+  VpnSecurityIngress:
+    Type: 'AWS::EC2::SecurityGroupIngress'
+    Properties:
+      GroupId: 
+        Fn::ImportValue: !Sub ${Environment}-VpnAccess
+      FromPort: 22
+      IpProtocol: tcp
+      ToPort: 22
+      SourceSecurityGroupId: !Ref VpnSecurity
+  
+  VpnSecurityIngressMongo1:
+    Type: 'AWS::EC2::SecurityGroupIngress'
+    Properties:
+      GroupId: 
+        Fn::ImportValue: !Sub ${Environment}-VpnAccess
+      FromPort: 27017
+      IpProtocol: tcp
+      ToPort: 27030
+      SourceSecurityGroupId: !Ref VpnSecurity
+
+  VpnSecurityIngressMongo2:
+    Type: 'AWS::EC2::SecurityGroupIngress'
+    Properties:
+      GroupId: 
+        Fn::ImportValue: !Sub ${Environment}-VpnAccess
+      FromPort: 28017
+      IpProtocol: tcp
+      ToPort: 28017
+      SourceSecurityGroupId: !Ref VpnSecurity
+
+  VpnSecurity:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: ELB access o the VPN
+      VpcId:
+        Fn::ImportValue: !Sub ${Environment}-Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub VpnSecurity.${Environment}
+      SecurityGroupIngress:
+        - FromPort: 22
+          IpProtocol: tcp
+          ToPort: 22
+          SourceSecurityGroupId: !Ref VpnElbSecurity
+        - FromPort: 1194
+          IpProtocol: tcp
+          ToPort: 1194
+          SourceSecurityGroupId: !Ref VpnElbSecurity
+        - FromPort: 443
+          IpProtocol: tcp
+          ToPort: 443
+          SourceSecurityGroupId: !Ref VpnElbSecurity
+        - FromPort: 10050
+          IpProtocol: tcp
+          ToPort: 10051
+          CidrIp:
+            Fn::ImportValue: !Sub ${Environment}-VpcCidr
+
+  LaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      KeyName: !Sub ${Environment}
+      ImageId: !Ref LinuxAMI
+      SecurityGroups:
+        - !Ref VpnSecurity
+      InstanceType: !Ref InstanceType
+
+  ElasticLoadBalancer:
+    Type: AWS::ElasticLoadBalancing::LoadBalancer
+    Properties:
+      Subnets:
+        - Fn::ImportValue: !Sub ${Environment}-PublicSubnetA
+        - Fn::ImportValue: !Sub ${Environment}-PublicSubnetB
+        - Fn::ImportValue: !Sub ${Environment}-PublicSubnetC
+      CrossZone: true
+      SecurityGroups:
+        - !Ref VpnElbSecurity
+      LoadBalancerName: !Sub elb-ovpn-${Environment}
+      Listeners:
+        - LoadBalancerPort: 22
+          InstancePort: 22
+          Protocol: TCP
+        - LoadBalancerPort: 443
+          InstancePort: 443
+          Protocol: TCP
+        - LoadBalancerPort: 1194
+          InstancePort: 1194
+          Protocol: TCP
+      HealthCheck:
+        Target: TCP:443
+        HealthyThreshold: 3
+        UnhealthyThreshold: 5
+        Interval: 30
+        Timeout: 5
+
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier:
+        - Fn::ImportValue: !Sub ${Environment}-PrivateSubnetA
+        - Fn::ImportValue: !Sub ${Environment}-PrivateSubnetB
+        - Fn::ImportValue: !Sub ${Environment}-PrivateSubnetC
+      LaunchConfigurationName: !Ref LaunchConfig
+      MinSize: 1
+      MaxSize: 1
+      LoadBalancerNames:
+        - !Ref ElasticLoadBalancer
+      NotificationConfigurations:
+        - TopicARN:
+            Fn::ImportValue: !Sub ${Environment}-DevOpsNotifications
+          NotificationTypes:
+            - autoscaling:EC2_INSTANCE_LAUNCH
+            - autoscaling:EC2_INSTANCE_LAUNCH_ERROR
+            - autoscaling:EC2_INSTANCE_TERMINATE
+            - autoscaling:EC2_INSTANCE_TERMINATE_ERROR
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+          PropagateAtLaunch: true
+        - Key: Name
+          Value: !Sub OpenVPN-${Environment}
+          PropagateAtLaunch: true
+
+  Dns:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      Type: CNAME
+      TTL: 60
+      ResourceRecords:
+        - !GetAtt ElasticLoadBalancer.DNSName
+      HostedZoneId:
+        Fn::ImportValue: !Sub ${Environment}-PublicHostedZone
+      Name: !Join
+        - "."
+        - - "vpn"
+          - Fn::ImportValue: !Sub ${Environment}-IngressDomain
+
+Outputs:
+  VpnSecurity:
+    Description: Security group associated with VPN user
+    Value: !Ref VpnSecurity
+    Export:
+      Name: !Sub ${Environment}-VpnSecurity

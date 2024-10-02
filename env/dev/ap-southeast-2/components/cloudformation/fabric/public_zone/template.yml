@@ -1,0 +1,41 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Create a route53 public zone
+Parameters:
+  Environment:
+    Type: String
+    Description: The environment to deploy to
+    Default: sb
+  IngressDomain:
+    Type: String
+    Description: The external Url of this R53 zone
+  ACMCertificateARN: 
+    Type: String
+    Description: Public SSL certificate for public domain
+
+Resources:
+  PublicHostedZone:
+    Type: AWS::Route53::HostedZone
+    Properties:
+      HostedZoneConfig:
+        Comment: !Sub The public zone for the ${Environment} environment
+      HostedZoneTags:
+        - Key: Environment
+          Value: !Ref Environment
+      Name: !Ref IngressDomain
+
+Outputs:
+  IngressDomain:
+    Description: Environment public hosted zone name
+    Value: !Ref IngressDomain
+    Export:
+      Name: !Sub ${Environment}-IngressDomain
+  PublicHostedZone:
+    Description: Environment public hosted zone name
+    Value: !Ref PublicHostedZone
+    Export:
+      Name: !Sub ${Environment}-PublicHostedZone
+  ACMCertificateARN:
+    Description: Environment SSL Certificate arn
+    Value: !Ref ACMCertificateARN
+    Export:
+      Name: !Sub ${Environment}-ACMCertificateARN-Public

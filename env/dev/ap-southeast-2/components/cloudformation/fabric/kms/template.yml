@@ -1,0 +1,45 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >
+  Generate the credstash table and supporting elements
+
+Parameters:
+  # General settings
+  Environment:
+    Type: String
+    Description: Name of the Environment to be created
+
+Resources:  
+  CredentialKmsKey:
+    Type: "AWS::KMS::Key"
+    Properties:
+      Description: KMS key used to encrypt credentials
+      KeyPolicy:
+        Version: "2012-10-17"
+        Id: "key-default-1"
+        Statement:
+        - Sid: "Allow admin of the key"
+          Effect: "Allow"
+          Principal:
+            AWS:
+            - !Sub "arn:aws:iam::${AWS::AccountId}:root"
+          Action:
+          - "kms:*"
+          Resource: "*"
+  CredentialKmsKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub 'alias/${Environment}-credentials'
+      TargetKeyId: !Ref CredentialKmsKey
+
+
+Outputs:
+  CredentialKeyAlias:
+    Description: Alias for the Credential KMS Key
+    Value: !Ref CredentialKmsKeyAlias
+    Export:
+      Name: !Sub ${Environment}-CredentialKeyAlias
+  CredentialKeyARN:
+    Description: Arn of the Credential KMS Key
+    Value: !GetAtt CredentialKmsKey.Arn
+    Export:
+      Name: !Sub ${Environment}-CredentialKmsKeyArn

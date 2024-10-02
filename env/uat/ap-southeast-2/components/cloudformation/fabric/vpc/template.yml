@@ -1,0 +1,389 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Create a standard VPC
+Parameters:
+  Environment:
+    Type: String
+    Description: The environment to deploy to
+    Default: sb
+  # VpcFlowLogRoleName:
+  #   Type: String
+  #   Description: IAM Role for VPC Flow Logs
+  #   Default: AWS-VPCFlowLogs
+
+  # subnet CIDR ranges ------------
+  VpcCidrBlock16:
+    Type: String
+    Description: IP Cidr /16 prefix for the VPC
+    Default: 10.0
+  InternalDomain:
+    Type: String
+    Description: DNS location for this environments private zone
+    Default: local.net
+  NatEipAllocationId:
+    Type: String
+    Description: Allocation Id of the EIP to attach to NAT gateway; leave empty to auto create a new EIP
+    Default: ""
+  ACMCertificateARN:
+    Type: String
+    Description: ARN of the ACM Certificate to be used on all application
+      ELB's for inter-application trust
+
+Resources:
+  # Networking components
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Sub ${VpcCidrBlock16}.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      InstanceTenancy: default
+      Tags:
+      - Key: Name
+        Value: !Sub vpc.${Environment}
+  # VpcFlowLog:
+  #   Type: AWS::EC2::FlowLog
+  #   Properties:
+  #     DeliverLogsPermissionArn: !Sub arn:aws:iam::${AWS::AccountId}:role/${VpcFlowLogRoleName}
+  #     LogGroupName: !Sub /aws/vpc/flowlog/${Environment}
+  #     ResourceId: !Ref Vpc
+  #     ResourceType: VPC
+  #     TrafficType: ALL
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+      - Key: Name
+        Value: !Sub igw.${Environment}
+  AttachInternetGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  # Subnets
+  # Zone A
+  PublicA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: ap-southeast-2a
+      VpcId: !Ref Vpc
+      CidrBlock: !Sub ${VpcCidrBlock16}.0.0/24
+      Tags:
+      - Key: Name
+        Value: !Sub Public.A.${Environment}
+  PrivateA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: ap-southeast-2a
+      VpcId: !Ref Vpc
+      CidrBlock: !Sub ${VpcCidrBlock16}.20.0/24
+      Tags:
+      - Key: Name
+        Value: !Sub Private.A.${Environment}
+
+  # Zone B
+  PublicB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: ap-southeast-2b
+      VpcId: !Ref Vpc
+      CidrBlock: !Sub ${VpcCidrBlock16}.100.0/24
+      Tags:
+      - Key: Name
+        Value: !Sub Public.B.${Environment}
+  PrivateB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: ap-southeast-2b
+      VpcId: !Ref Vpc
+      CidrBlock: !Sub ${VpcCidrBlock16}.120.0/24
+      Tags:
+      - Key: Name
+        Value: !Sub Private.B.${Environment}
+
+  # Zone C
+  PublicC:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: ap-southeast-2c
+      VpcId: !Ref Vpc
+      CidrBlock: !Sub ${VpcCidrBlock16}.200.0/24
+      Tags:
+      - Key: Name
+        Value: !Sub Public.C.${Environment}
+
+  PrivateC:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: ap-southeast-2c
+      VpcId: !Ref Vpc
+      CidrBlock: !Sub ${VpcCidrBlock16}.220.0/24
+      Tags:
+      - Key: Name
+        Value: !Sub Private.C.${Environment}
+
+  # Routing Tables - Public
+  InternetGatewayRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+      - Key: Name
+        Value: !Sub rt-Public.${Environment}
+  InternetGatewayRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref InternetGatewayRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+  SubnetRouteTableAssociationPublicA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicA
+      RouteTableId: !Ref InternetGatewayRouteTable
+  SubnetRouteTableAssociationPublicB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicB
+      RouteTableId: !Ref InternetGatewayRouteTable
+  SubnetRouteTableAssociationPublicC:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicC
+      RouteTableId: !Ref InternetGatewayRouteTable
+
+
+  # Routing Tables - Private
+  PrivateRouteTableA:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+      - Key: Name
+        Value: !Sub rt-Private-a.${Environment}
+  PrivateRouteTableB:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+      - Key: Name
+        Value: !Sub rt-Private-b.${Environment}
+  PrivateRouteTableC:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+      - Key: Name
+        Value: !Sub rt-Private-c.${Environment}
+
+  SubnetRouteTableAssociationPrivateA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateA
+      RouteTableId: !Ref PrivateRouteTableA
+  SubnetRouteTableAssociationPrivateB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateB
+      RouteTableId: !Ref PrivateRouteTableA
+  SubnetRouteTableAssociationPrivateC:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateC
+      RouteTableId: !Ref PrivateRouteTableB
+
+  # Network Address Translation & DHCP
+  NatEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+  NatGatewayA:
+    Type: AWS::EC2::NatGateway
+    DependsOn: NatEIP
+    Properties:
+      AllocationId: !GetAtt NatEIP.AllocationId
+      SubnetId: !Ref PublicA
+  RoutePrivateNATA:
+    Type: AWS::EC2::Route
+    DependsOn: NatGatewayA
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableA
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGatewayA
+  RoutePrivateNATB:
+    Type: AWS::EC2::Route
+    DependsOn: NatGatewayA
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableB
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGatewayA
+  RoutePrivateNATC:
+    Type: AWS::EC2::Route
+    DependsOn: NatGatewayA
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableC
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGatewayA
+
+  DHCP:
+    Type: AWS::EC2::DHCPOptions
+    Properties:
+      DomainName: !Ref InternalDomain
+      DomainNameServers:
+      - AmazonProvidedDNS
+      Tags:
+      - Key: Name
+        Value: !Sub dhcp.${Environment}
+  DHCPOptionsAssociation:
+    Type: AWS::EC2::VPCDHCPOptionsAssociation
+    Properties:
+      VpcId: !Ref Vpc
+      DhcpOptionsId: !Ref DHCP
+
+  S3Endpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      # PolicyDocument: JSON object - default = allow all
+      RouteTableIds:
+        - !Ref PrivateRouteTableA
+        - !Ref PrivateRouteTableB
+        - !Ref PrivateRouteTableC
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.s3
+      VpcId: !Ref Vpc
+  
+  InterfaceEndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Port 443 access to api gateway
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: Apigateway private access SG
+      SecurityGroupIngress:
+        - FromPort: 443
+          IpProtocol: tcp
+          ToPort: 443
+          CidrIp: !Sub ${VpcCidrBlock16}.0.0/16
+
+  InterfaceEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      #PolicyDocument: JSON object - default = allow all
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SecurityGroupIds:
+       - !Ref InterfaceEndpointSecurityGroup 
+      SubnetIds:
+       - !Ref PrivateA
+       - !Ref PrivateB
+       - !Ref PrivateC
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.execute-api
+      VpcId: !Ref Vpc
+
+
+  PrivateHostedZone:
+    Type: AWS::Route53::HostedZone
+    Properties:
+      HostedZoneConfig:
+        Comment: !Sub The private zone for the ${Environment} environment
+      HostedZoneTags:
+        - Key: Environment
+          Value: !Ref Environment
+      Name: !Ref InternalDomain
+      VPCs:
+      - VPCId: !Ref Vpc
+        VPCRegion: "ap-southeast-2"
+
+      
+Outputs:
+  Vpc:
+    Description: Vpc
+    Value: !Ref Vpc
+    Export:
+      Name: !Sub ${Environment}-Vpc
+
+  VpcPrivateEndpoint:
+    Description: Private VPC endpoint
+    Value: !Ref InterfaceEndpoint
+    Export:
+      Name: !Sub ${Environment}-VpcPrivateEndpoint
+
+  VpcCidr:
+    Description: VpcCidr
+    Value: !Sub ${VpcCidrBlock16}.0.0/16
+    Export:
+      Name: !Sub ${Environment}-VpcCidr
+
+  NATCidr:
+    Description: NATCidr
+    Value: 
+      Fn::Join:
+        - ''
+        - - !Ref NatEIP
+          - '/32'
+    Export:
+      Name: !Sub ${Environment}-NATCidr   
+  # Public subnets
+
+  PublicSubnetA:
+    Description: PublicSubnetA
+    Value: !Ref PublicA
+    Export:
+      Name: !Sub ${Environment}-PublicSubnetA
+
+  PublicSubnetB:
+    Description: PublicSubnetB
+    Value: !Ref PublicB
+    Export:
+      Name: !Sub ${Environment}-PublicSubnetB
+
+  PublicSubnetC:
+    Description: PublicSubnetC
+    Value: !Ref PublicC
+    Export:
+      Name: !Sub ${Environment}-PublicSubnetC
+
+
+  # Private subnets
+
+  PrivateSubnetA:
+    Description: Private A
+    Value: !Ref PrivateA
+    Export:
+      Name: !Sub ${Environment}-PrivateSubnetA
+
+  PrivateSubnetB:
+    Description: Private B
+    Value: !Ref PrivateB
+    Export:
+      Name: !Sub ${Environment}-PrivateSubnetB
+
+  PrivateSubnetC:
+    Description: Private C
+    Value: !Ref PrivateC
+    Export:
+      Name: !Sub ${Environment}-PrivateSubnetC
+
+  # Route 53 -----
+
+  InternalDomain:
+    Description: Domain of private ingress
+    Value: !Ref InternalDomain
+    Export:
+      Name: !Sub ${Environment}-InternalDomain
+
+  PrivateHostedZone:
+    Description: Environment private hosted zone
+    Value: !Ref PrivateHostedZone
+    Export:
+      Name: !Sub ${Environment}-PrivateHostedZone
+
+  Environment:
+    Description: Environment code used on compute nodes
+    Value: !Ref Environment
+
+  ACMCertificateARN:
+    Description: ACM Certificate ARN
+    Value: !Ref ACMCertificateARN
+    Export:
+      Name: !Sub ${Environment}-ACMCertificateARN

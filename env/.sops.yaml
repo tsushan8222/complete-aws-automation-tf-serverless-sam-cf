@@ -1,0 +1,26 @@
+creation_rules:
+  - path_regex: \.data\.yaml$
+    key_groups:
+      - kms:
+          - arn: arn:aws:kms:ap-southeast-2:123456789:key/sdfsdafasdfdsf
+            role: arn:aws:iam::123456789:role/kms
+  - path_regex: \.dataprod\.yaml$
+    key_groups:
+      - kms:
+          - arn: arn:aws:kms:ap-southeast-2:123456789:key/sdfasdfsadfadsfasd
+            role: arn:aws:iam::123456789:role/kms
+  - path_regex: \.dev\.yaml$
+    key_groups:
+      - kms:
+          - arn: arn:aws:kms:ap-southeast-2:123456789:key/sdfasdfasdfasdf
+            role: arn:aws:iam::123456789:role/kms
+  - path_regex: \.uat\.yaml$
+    key_groups:
+      - kms:
+          - arn: arn:aws:kms:ap-southeast-2:123456789:key/sdfasdfasd
+            role: arn:aws:iam::123456789:role/kms
+  - path_regex: \.prod\.yaml$
+    key_groups:
+      - kms:
+          - arn: arn:aws:kms:ap-southeast-2:123456789:key/sdfasdf
+            role: arn:aws:iam::123456789:role/kms

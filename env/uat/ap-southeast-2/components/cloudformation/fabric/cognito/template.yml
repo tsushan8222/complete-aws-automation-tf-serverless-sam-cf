@@ -1,0 +1,266 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >
+  Cognito instance for all federated access
+
+Parameters:
+  # General settings
+  Environment:
+    Type: String
+    Description: Name of the Environment to be created
+  IngressDomain:
+    Type: String
+    Description: Name of the domain
+    Default: "uat.homeloanexperts.net.au"
+  CloudFrontCert:
+    Type: String
+    Description: "Certificate for SSL generated on us-east-1 region"
+  ACMCertificateARN:
+    Type: String
+    Description: AWS SSL certificate for cognito domain
+  SESAccountARN:
+    Type: String
+    Description: ARN of SES Email Account
+
+Resources:
+  CognitoUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      # Generate a name based on the stage
+      UserPoolName: !Sub ${Environment}-pmx-user-pool
+      # Set email as an alias
+      UsernameAttributes:
+        - email
+      AutoVerifiedAttributes:
+        - email
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          TemporaryPasswordValidityDays: 90
+      EmailConfiguration:
+        EmailSendingAccount: DEVELOPER
+        SourceArn: !Sub ${SESAccountARN}
+      Schema:
+        - Name: savedInDB
+          AttributeDataType: String
+          StringAttributeConstraints:
+            MinLength: 1
+            MaxLength: 256
+          DeveloperOnlyAttribute: false
+          Required: false
+          Mutable: true
+        - Name: role
+          AttributeDataType: String
+          StringAttributeConstraints:
+            MaxLength: 256
+            MinLength: 1
+          Mutable: true
+      LambdaConfig:
+        DefineAuthChallenge:
+          Fn::ImportValue: !Sub "${Environment}-DefineAuthChallengeArn"
+        CreateAuthChallenge:
+          Fn::ImportValue: !Sub "${Environment}-CreateAuthChallengeArn"
+        VerifyAuthChallengeResponse:
+          Fn::ImportValue: !Sub "${Environment}-VerifyAuthChallengeRespArn"
+        PostAuthentication:
+          Fn::ImportValue: !Sub "${Environment}-PostAuthenticationArn"
+
+  CognitoUserPoolIdentityProvider:
+    Type: AWS::Cognito::UserPoolIdentityProvider
+    DependsOn:
+      - CognitoUserPool
+#      - CognitoUserPoolClient
+    Properties:
+      UserPoolId: !Ref CognitoUserPool
+      ProviderName: Google
+      ProviderDetails:
+        client_id: "{{resolve:ssm:GoogleClientID:1}}"
+        client_secret: "{{resolve:ssm:GoogleAppSecret:1}}"
+        authorize_scopes: profile email openid
+      ProviderType: Google
+      AttributeMapping:
+        email: "email"
+        picture: "picture"
+        email_verified: "email_verified"
+        name: "name"
+
+  CognitoUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    DependsOn:
+      - CognitoUserPoolIdentityProvider
+    Properties:
+      # Generate an app client name based on the stage
+      ClientName: !Sub ${Environment}-pmx-user-pool-client
+      UserPoolId: !Ref CognitoUserPool
+      AccessTokenValidity: 60
+      IdTokenValidity: 60
+      RefreshTokenValidity: 30
+      TokenValidityUnits: 
+        AccessToken: "minutes"
+        IdToken: "minutes"
+        RefreshToken: "days"
+      ExplicitAuthFlows:
+        - ADMIN_NO_SRP_AUTH
+      GenerateSecret: false
+      AllowedOAuthFlowsUserPoolClient: true
+      SupportedIdentityProviders:
+        - COGNITO
+        - Google
+      AllowedOAuthFlows:
+        - code
+        - implicit
+      AllowedOAuthScopes:
+        - email
+        - openid
+        - profile
+        - aws.cognito.signin.user.admin
+      CallbackURLs:
+        - http://localhost:3000
+        - http://localhost:3001
+        - http://localhost:3000/broker
+        - http://localhost:3002
+        - http://localhost:4000
+        - http://localhost:4000/broker
+        - !Sub https://factfind.${IngressDomain}
+        - !Sub https://factfind.${IngressDomain}/broker
+        - !Sub https://credithive.${IngressDomain}
+        - !Sub https://pmx.${IngressDomain}
+        - !Sub https://lf.${IngressDomain}
+        - !Sub https://lf.${IngressDomain}/broker
+        - !Sub https://factfind-role.${IngressDomain}
+        - !Sub https://lqs.${IngressDomain}
+        - !Sub https://stamp-duty.${IngressDomain}
+        - !Sub https://workbench.${IngressDomain}
+      LogoutURLs:
+        - http://localhost:3000
+        - http://localhost:3001
+        - http://localhost:3000/broker
+        - http://localhost:3002
+        - http://localhost:4000
+        - http://localhost:4000/broker
+        - !Sub https://factfind.${IngressDomain}
+        - !Sub https://factfind.${IngressDomain}/broker
+        - !Sub https://credithive.${IngressDomain}
+        - !Sub https://pmx.${IngressDomain}
+        - !Sub https://lf.${IngressDomain}
+        - !Sub https://lf.${IngressDomain}/broker
+        - !Sub https://factfind-role.${IngressDomain}
+        - !Sub https://lqs.${IngressDomain}
+        - !Sub https://stamp-duty.${IngressDomain}
+        - !Sub https://workbench.${IngressDomain}
+      ReadAttributes:
+        - custom:savedInDB
+        - custom:role
+        - picture
+        - email
+        - email_verified
+        - name
+        - profile
+      WriteAttributes:
+        - custom:savedInDB
+
+  # The federated identity for our user pool to auth with
+  CognitoIdentityPool:
+    Type: AWS::Cognito::IdentityPool
+    Properties:
+      # Generate a name based on the stage
+      IdentityPoolName: !Sub ${Environment}PMXIdentityPool
+      # Don't allow unathenticated users
+      AllowUnauthenticatedIdentities: false
+      # Link to our User Pool
+      CognitoIdentityProviders:
+        - ClientId: !Ref CognitoUserPoolClient
+          ProviderName: !GetAtt CognitoUserPool.ProviderName
+
+  # Cognito userpool domain integrations
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      UserPoolId: !Ref CognitoUserPool
+      Domain: !Sub id.${IngressDomain}
+      CustomDomainConfig:
+        CertificateArn: !Ref CloudFrontCert
+
+  # IAM roles
+  CognitoIdentityPoolRoles:
+    Type: AWS::Cognito::IdentityPoolRoleAttachment
+    Properties:
+      IdentityPoolId: !Ref CognitoIdentityPool
+      Roles:
+        authenticated: !GetAtt CognitoAuthRole.Arn
+
+  # IAM role used for authenticated users
+  CognitoAuthRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Federated: "cognito-identity.amazonaws.com"
+            Action:
+              - "sts:AssumeRoleWithWebIdentity"
+            Condition:
+              StringEquals:
+                "cognito-identity.amazonaws.com:aud": !Ref CognitoIdentityPool
+              "ForAnyValue:StringLike":
+                "cognito-identity.amazonaws.com:amr": authenticated
+      ManagedPolicyArns:
+        - !Ref ApiGatewayManagedPolicy
+        - !Ref LambdaManagedPolicy
+
+  ApiGatewayManagedPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowUsersToInvokeApi
+            Effect: Allow
+            Action:
+              - "execute-api:Invoke"
+            Resource: "arn:aws:execute-api:*:*:*"
+
+  LambdaManagedPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowUsersToInvokeLambda
+            Effect: Allow
+            Action:
+              - "lambda:InvokeFunction"
+            Resource: "*"
+
+# Print out the Id of the Identity Pool that is created
+Outputs:
+  IdentityPoolId:
+    Value: !Ref CognitoIdentityPool
+    Export:
+      Name: !Sub ${Environment}-CognitoIdentityPool
+  UserPoolId:
+    Value: !Ref CognitoUserPool
+    Export:
+      Name: !Sub ${Environment}-CognitoUserPool
+  UserPoolClientId:
+    Value: !Ref CognitoUserPoolClient
+    Export:
+      Name: !Sub ${Environment}-CognitoUserPoolClient
+  CognitoAuthRole:
+    Value: !Ref CognitoAuthRole
+    Export:
+      Name: !Sub ${Environment}-CognitoAuthRole
+  LambdaManagedPolicy:
+    Value: !Ref LambdaManagedPolicy
+    Export:
+      Name: !Sub ${Environment}-LambdaManagedPolicy
+  ApiGatewayManagedPolicy:
+    Value: !Ref ApiGatewayManagedPolicy
+    Export:
+      Name: !Sub ${Environment}-ApiGatewayManagedPolicy
+  UserPoolArn:
+    Value: !GetAtt CognitoUserPool.Arn
+    Export:
+      Name: !Sub ${Environment}-UserPoolArn
